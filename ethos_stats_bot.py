@@ -43,7 +43,10 @@ from discord.ext import commands
 # ---------------------------------------------------------------------------
 
 ETHOS_SUITE_BOT_ID = 1541811908141777018
-DB_PATH = "ethos_drops.db"
+# Defaults to a local file for running on your own machine. On Railway,
+# set the DB_PATH environment variable to your mounted volume's path
+# (e.g. /data/ethos_drops.db) so data survives redeploys.
+DB_PATH = os.environ.get("DB_PATH", "ethos_drops.db")
 
 # See "RARITY MAPPING — PLEASE CONFIRM" note above. Edit freely.
 UNICODE_RARITY_MAP = {
