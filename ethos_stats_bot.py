@@ -76,6 +76,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             outcome TEXT,               -- 'win' or 'loss'
             clear_seconds INTEGER,
+            player_name TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -94,11 +95,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-def log_run(outcome: str, clear_seconds, items) -> int:
+def log_run(outcome: str, clear_seconds, player_name, items) -> int:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute(
-        "INSERT INTO runs (outcome, clear_seconds) VALUES (?, ?)",
-        (outcome, clear_seconds),
+        "INSERT INTO runs (outcome, clear_seconds, player_name) VALUES (?, ?, ?)",
+        (outcome, clear_seconds, player_name),
     )
     run_id = cur.lastrowid
     for item in items:
@@ -114,7 +115,7 @@ def log_run(outcome: str, clear_seconds, items) -> int:
 
 def fetch_runs():
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT outcome, clear_seconds FROM runs").fetchall()
+    rows = conn.execute("SELECT outcome, clear_seconds, player_name FROM runs").fetchall()
     conn.close()
     return rows
 
@@ -182,9 +183,11 @@ def parse_ethos_message(message: discord.Message):
     if not raw:
         return None
 
-    if re.search(r"\bVICTORY\b", raw, re.IGNORECASE):
+    # "VICTORY" and "RODIN DEFEATED" both mean the player won (Rodin was
+    # defeated BY the player) — only "ATTEMPT FAILED" is a loss.
+    if re.search(r"\bVICTORY\b", raw, re.IGNORECASE) or re.search(r"RODIN DEFEATED", raw, re.IGNORECASE):
         outcome = "win"
-    elif re.search(r"\bFAILED\b", raw, re.IGNORECASE) or re.search(r"\bDEFEATED\b", raw, re.IGNORECASE):
+    elif re.search(r"ATTEMPT FAILED", raw, re.IGNORECASE):
         outcome = "loss"
     else:
         return None  # not a run-result message
@@ -192,6 +195,10 @@ def parse_ethos_message(message: discord.Message):
     # Clear Time (win) or Fight Time (loss)
     time_match = re.search(r"(?:Clear Time|Fight Time)\s+`?([0-9:hms\s]+?)`?(?:\s|$|•)", raw)
     clear_seconds = parse_clear_time(time_match.group(1)) if time_match else None
+
+    # Player name appears as a Discord spoiler tag, e.g. ||idontlikehaqer||
+    player_match = re.search(r"\|\|(.+?)\|\|", raw)
+    player_name = player_match.group(1).strip() if player_match else None
 
     items = []
     if "No drops captured" not in raw:
@@ -228,7 +235,7 @@ def parse_ethos_message(message: discord.Message):
                     "potential_power": parse_number(potential_str) if potential_str else None,
                 })
 
-    return {"outcome": outcome, "clear_seconds": clear_seconds, "items": items}
+    return {"outcome": outcome, "clear_seconds": clear_seconds, "player_name": player_name, "items": items}
 
 # ---------------------------------------------------------------------------
 # Events
@@ -244,7 +251,7 @@ async def on_message(message: discord.Message):
     if message.author.id == ETHOS_SUITE_BOT_ID:
         parsed = parse_ethos_message(message)
         if parsed:
-            log_run(parsed["outcome"], parsed["clear_seconds"], parsed["items"])
+            log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"], parsed["items"])
 
     await bot.process_commands(message)
 
@@ -295,6 +302,9 @@ async def combined_stats(ctx: commands.Context):
     avg_seconds = sum(clear_times) / len(clear_times) if clear_times else 0
     avg_m, avg_s = divmod(int(avg_seconds), 60)
 
+    distinct_users = {r[2] for r in runs if r[2]}
+    user_count = len(distinct_users)
+
     total_item_rolls = len(drops)
     non_spell_drops = [d for d in drops if d[1].lower() not in EXCLUDED_TYPES]
     spell_drops = [d for d in drops if d[1].lower() in EXCLUDED_TYPES]
@@ -308,7 +318,15 @@ async def combined_stats(ctx: commands.Context):
     item_lines = []
     for name, count in sorted(item_counts.items(), key=lambda x: -x[1]):
         pct = 100 * count / total_non_spell if total_non_spell else 0
-        item_lines.append(f"{name:<24}{count:>7}  {pct:5.2f}%")
+        item_lines.append(f"{name:<24}{count:>6}  {pct:5.2f}%")
+
+    # Valhalla items are identified by name prefix, not a distinct type field —
+    # shown as its own breakdown, same style, while still counted in the main table above.
+    valhalla_counts = {name: c for name, c in item_counts.items() if name.lower().startswith("valhalla")}
+    valhalla_lines = []
+    for name, count in sorted(valhalla_counts.items(), key=lambda x: -x[1]):
+        pct = 100 * count / total_non_spell if total_non_spell else 0
+        valhalla_lines.append(f"{name:<24}{count:>6}  {pct:5.2f}%")
 
     # Tier breakdown
     tier_counts = {}
@@ -321,42 +339,46 @@ async def combined_stats(ctx: commands.Context):
             continue
         count = tier_counts[tier]
         pct = 100 * count / total_non_spell if total_non_spell else 0
-        tier_lines.append(f"{tier:<12}{count:>7}  {pct:5.2f}%")
-
-    embed = discord.Embed(
-        title="Dungeon Quest Farm Statistics — COMBINED RESULTS",
-        color=discord.Color.dark_theme(),
-    )
-    embed.add_field(name="Total Runs", value=str(total_runs), inline=True)
-    embed.add_field(name="Average Clear", value=f"{avg_m}m {avg_s}s", inline=True)
-    embed.add_field(name="Total Item Rolls", value=str(total_item_rolls), inline=True)
-    embed.add_field(name="Non-spell Gear Drops", value=str(total_non_spell), inline=True)
-
-    if item_lines:
-        embed.add_field(
-            name="Item Breakdown (spells excluded)",
-            value="```\n" + "\n".join(item_lines) + "\n```",
-            inline=False,
-        )
-    if tier_lines:
-        embed.add_field(
-            name="Tier Breakdown",
-            value="```\n" + "\n".join(tier_lines) + "\n```",
-            inline=False,
-        )
+        tier_lines.append(f"{tier:<12}{count:>6}  {pct:5.2f}%")
 
     spell_pct = (100 * len(spell_drops) / total_item_rolls) if total_item_rolls else 0
-    embed.add_field(
-        name="Excluded Spells",
-        value=f"{len(spell_drops)} rolls ({spell_pct:.2f}%)",
-        inline=False,
+
+    title_suffix = f" ACROSS {user_count} USERS" if user_count else ""
+    footer_suffix = f" across {user_count} users" if user_count else ""
+
+    lines = []
+    lines.append(f"**Total Runs:** `{total_runs:,}`")
+    lines.append(f"**Average Clear:** `{avg_m}m {avg_s}s`")
+    lines.append(f"**Total Item Rolls:** `{total_item_rolls:,}`")
+    lines.append(f"**Non-spell Gear Drops:** `{total_non_spell:,}`")
+    lines.append("")
+
+    if item_lines:
+        lines.append("**Item Breakdown (spells excluded)**")
+        lines.append("```\n" + "\n".join(item_lines) + "\n```")
+
+    if valhalla_lines:
+        lines.append("**Epic Valhalla Breakdown**")
+        lines.append("```\n" + "\n".join(valhalla_lines) + "\n```")
+
+    if tier_lines:
+        lines.append("**Tier Breakdown**")
+        lines.append("```\n" + "\n".join(tier_lines) + "\n```")
+
+    lines.append("**Excluded Spells**")
+    lines.append(f"`{len(spell_drops):,}` rolls (`{spell_pct:.2f}%`)")
+    lines.append("")
+
+    lines.append("**Rodin Record**")
+    lines.append(f"Wins: `{wins}` • Failed: `{losses}` • Attempts: `{total_runs}`")
+    lines.append(f"Win Rate: `{win_rate:.2f}%`")
+
+    embed = discord.Embed(
+        title=f"Dungeon Quest Farm Statistics — COMBINED RESULTS{title_suffix}",
+        description="\n".join(lines),
+        color=discord.Color.dark_theme(),
     )
-    embed.add_field(
-        name="Rodin Record",
-        value=f"Wins: {wins} • Failed: {losses} • Attempts: {total_runs}\n"
-              f"Win Rate: {win_rate:.2f}%",
-        inline=False,
-    )
+    embed.set_footer(text=f"Combined stats{footer_suffix} • Type !combined or !combinedstats")
 
     await ctx.send(embed=embed)
 
