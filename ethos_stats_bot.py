@@ -125,6 +125,13 @@ def fetch_drops():
     conn.close()
     return rows
 
+def reset_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM drops")
+    conn.execute("DELETE FROM runs")
+    conn.commit()
+    conn.close()
+
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
@@ -283,6 +290,27 @@ async def raw_dump(ctx: commands.Context):
     # Send in chunks so long dumps don't exceed Discord's message limit.
     for i in range(0, len(raw), 1900):
         await ctx.send(f"```\n{raw[i:i+1900]}\n```")
+
+@bot.command(name="resetstats")
+@commands.has_permissions(administrator=True)
+async def reset_stats(ctx: commands.Context, confirm: str = None):
+    """Wipes all logged runs and item drops. Requires: !resetstats confirm"""
+    if confirm != "confirm":
+        await ctx.send(
+            "⚠️ This will **permanently delete all logged runs and drops**. "
+            "Run `!resetstats confirm` if you're sure."
+        )
+        return
+
+    reset_db()
+    await ctx.send("✅ All stats have been reset. Logging starts fresh from here.")
+
+@reset_stats.error
+async def reset_stats_error(ctx: commands.Context, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("Only server admins can reset stats.")
+    else:
+        raise error
 
 @bot.command(name="combinedstats", aliases=["combined"])
 async def combined_stats(ctx: commands.Context):
