@@ -129,13 +129,14 @@ def log_run(outcome: str, clear_seconds, player_names, items, is_rodin: int = 0)
 RUN_MERGE_WINDOW_SECONDS = 15
 
 def find_recent_matching_run(outcome: str):
-    """Find any run (Rodin or plain VICTORY) logged very recently with the
-    same outcome — almost certainly the same shared party battle posted once
-    per player. Returns (run_id, existing_player_names) or None."""
+    """Find a Rodin run logged very recently with the same outcome —
+    almost certainly the same shared party battle posted once per player.
+    Returns (run_id, existing_player_names) or None. Only ever matches
+    other Rodin runs; normal VICTORY runs are never merged."""
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         f"""SELECT id, player_name FROM runs
-            WHERE outcome = ?
+            WHERE is_rodin = 1 AND outcome = ?
               AND created_at >= datetime('now', '-{RUN_MERGE_WINDOW_SECONDS} seconds')
             ORDER BY id DESC LIMIT 1""",
         (outcome,),
@@ -318,13 +319,18 @@ async def on_message(message: discord.Message):
     if message.author.id == ETHOS_SUITE_BOT_ID:
         parsed = parse_ethos_message(message)
         if parsed:
-            existing = find_recent_matching_run(parsed["outcome"])
-            if existing:
-                existing_run_id, existing_player_name = existing
-                merge_into_run(existing_run_id, existing_player_name, parsed["player_name"], parsed["items"])
+            if parsed["is_rodin"]:
+                existing = find_recent_matching_run(parsed["outcome"])
+                if existing:
+                    existing_run_id, existing_player_name = existing
+                    merge_into_run(existing_run_id, existing_player_name, parsed["player_name"], parsed["items"])
+                else:
+                    log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
+                            parsed["items"], is_rodin=1)
             else:
+                # Normal VICTORY runs are never merged — every message is its own run.
                 log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
-                        parsed["items"], is_rodin=int(parsed["is_rodin"]))
+                        parsed["items"], is_rodin=0)
 
     await bot.process_commands(message)
 
