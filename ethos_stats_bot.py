@@ -251,6 +251,7 @@ def parse_ethos_message(message: discord.Message):
 @bot.event
 async def on_ready():
     init_db()
+    await bot.tree.sync()
     print(f"Logged in as {bot.user}")
 
 @bot.event
@@ -266,13 +267,16 @@ async def on_message(message: discord.Message):
 # Commands
 # ---------------------------------------------------------------------------
 
-@bot.command(name="rawdump")
+@bot.hybrid_command(name="rawdump", description="Debug: show the raw text of a recent Ethos Suite message")
 async def raw_dump(ctx: commands.Context):
     """Debug helper: prints the raw content of the message being replied to
     (or the most recent Ethos Suite message) so you can read real emoji codes."""
     target = None
-    if ctx.message.reference:
-        target = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+    # Replying-to-a-message only makes sense for prefix invocation; slash
+    # commands have no message to reply to, so just grab the latest one.
+    message_ref = getattr(ctx, "message", None)
+    if message_ref and message_ref.reference:
+        target = await ctx.channel.fetch_message(message_ref.reference.message_id)
     else:
         async for msg in ctx.channel.history(limit=25):
             if msg.author.id == ETHOS_SUITE_BOT_ID:
@@ -291,7 +295,7 @@ async def raw_dump(ctx: commands.Context):
     for i in range(0, len(raw), 1900):
         await ctx.send(f"```\n{raw[i:i+1900]}\n```")
 
-@bot.command(name="resetstats")
+@bot.hybrid_command(name="resetstats", description="Admin only: permanently wipe all logged runs and drops")
 @commands.has_permissions(administrator=True)
 async def reset_stats(ctx: commands.Context, confirm: str = None):
     """Wipes all logged runs and item drops. Requires: !resetstats confirm"""
@@ -312,7 +316,7 @@ async def reset_stats_error(ctx: commands.Context, error):
     else:
         raise error
 
-@bot.command(name="combinedstats", aliases=["combined"])
+@bot.hybrid_command(name="combinedstats", aliases=["combined"], description="Show the combined drop-farming stats")
 async def combined_stats(ctx: commands.Context):
     runs = fetch_runs()
     drops = fetch_drops()
