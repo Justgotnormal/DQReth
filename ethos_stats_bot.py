@@ -362,6 +362,29 @@ async def raw_dump(ctx: commands.Context):
     for i in range(0, len(raw), 1900):
         await ctx.send(f"```\n{raw[i:i+1900]}\n```")
 
+@bot.hybrid_command(name="listruns", description="Debug: show the most recently logged runs, raw")
+async def list_runs(ctx: commands.Context, count: int = 10):
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        """SELECT id, outcome, clear_seconds, player_name, is_rodin, created_at
+           FROM runs ORDER BY id DESC LIMIT ?""",
+        (count,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await ctx.send("No runs logged yet.")
+        return
+
+    lines = ["id  outcome  seconds  rodin  created_at            player_name"]
+    for r in rows:
+        run_id, outcome, seconds, player_name, is_rodin, created_at = r
+        lines.append(f"{run_id:<4}{outcome:<9}{str(seconds):<9}{is_rodin:<7}{created_at:<22}{player_name}")
+
+    text = "\n".join(lines)
+    for i in range(0, len(text), 1900):
+        await ctx.send(f"```\n{text[i:i+1900]}\n```")
+
 @bot.hybrid_command(name="resetstats", description="Admin only: permanently wipe all logged runs and drops")
 @commands.has_permissions(administrator=True)
 async def reset_stats(ctx: commands.Context, confirm: str = None):
