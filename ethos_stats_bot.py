@@ -355,9 +355,17 @@ async def combined_stats(ctx: commands.Context):
         pct = 100 * count / total_non_spell if total_non_spell else 0
         item_lines.append(f"{name:<24}{count:>6}  {pct:5.2f}%")
 
-    # Valhalla items are identified by name prefix, not a distinct type field —
-    # shown as its own breakdown, same style, while still counted in the main table above.
-    valhalla_counts = {name: c for name, c in item_counts.items() if name.lower().startswith("valhalla")}
+    # Valhalla items are identified by name prefix, not a distinct type field.
+    # "Epic Valhalla Breakdown" is specifically the EPIC-rarity drops of those
+    # items — not every Valhalla item regardless of rarity — so both the name
+    # prefix and rarity must match.
+    valhalla_epic_drops = [
+        d for d in non_spell_drops
+        if d[0].lower().startswith("valhalla") and d[2] == "Epic Gear"
+    ]
+    valhalla_counts = {}
+    for name, _type, _rarity in valhalla_epic_drops:
+        valhalla_counts[name] = valhalla_counts.get(name, 0) + 1
     valhalla_lines = []
     for name, count in sorted(valhalla_counts.items(), key=lambda x: -x[1]):
         pct = 100 * count / total_non_spell if total_non_spell else 0
