@@ -122,21 +122,23 @@ def log_run(outcome: str, clear_seconds, player_names, items, is_rodin: int = 0)
     conn.close()
     return run_id
 
-# How long after a Rodin result message to still consider a later one part of
-# the same shared party attempt, rather than a new run.
-RODIN_MERGE_WINDOW_SECONDS = 60
+# How long after a result message to still consider a later one part of the
+# same shared party attempt, rather than a brand new run. Individual party
+# members' own timers can read a couple seconds apart for the same battle,
+# so this matches on timing proximity + outcome rather than an exact time.
+RUN_MERGE_WINDOW_SECONDS = 15
 
-def find_recent_rodin_run(outcome: str, clear_seconds):
-    """Find a Rodin run logged very recently with the same outcome and Fight
-    Time, meaning it's almost certainly the same shared battle. Returns
-    (run_id, existing_player_names) or None."""
+def find_recent_matching_run(outcome: str):
+    """Find any run (Rodin or plain VICTORY) logged very recently with the
+    same outcome — almost certainly the same shared party battle posted once
+    per player. Returns (run_id, existing_player_names) or None."""
     conn = sqlite3.connect(DB_PATH)
     row = conn.execute(
         f"""SELECT id, player_name FROM runs
-            WHERE is_rodin = 1 AND outcome = ? AND clear_seconds = ?
-              AND created_at >= datetime('now', '-{RODIN_MERGE_WINDOW_SECONDS} seconds')
+            WHERE outcome = ?
+              AND created_at >= datetime('now', '-{RUN_MERGE_WINDOW_SECONDS} seconds')
             ORDER BY id DESC LIMIT 1""",
-        (outcome, clear_seconds),
+        (outcome,),
     ).fetchone()
     conn.close()
     return row
@@ -316,17 +318,13 @@ async def on_message(message: discord.Message):
     if message.author.id == ETHOS_SUITE_BOT_ID:
         parsed = parse_ethos_message(message)
         if parsed:
-            if parsed["is_rodin"]:
-                existing = find_recent_rodin_run(parsed["outcome"], parsed["clear_seconds"])
-                if existing:
-                    existing_run_id, existing_player_name = existing
-                    merge_into_run(existing_run_id, existing_player_name, parsed["player_name"], parsed["items"])
-                else:
-                    log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
-                            parsed["items"], is_rodin=1)
+            existing = find_recent_matching_run(parsed["outcome"])
+            if existing:
+                existing_run_id, existing_player_name = existing
+                merge_into_run(existing_run_id, existing_player_name, parsed["player_name"], parsed["items"])
             else:
                 log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
-                        parsed["items"], is_rodin=0)
+                        parsed["items"], is_rodin=int(parsed["is_rodin"]))
 
     await bot.process_commands(message)
 
