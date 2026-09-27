@@ -161,7 +161,7 @@ def merge_into_run(run_id: int, existing_player_names, new_player_names, items):
 
 def fetch_runs():
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT outcome, clear_seconds, player_name FROM runs").fetchall()
+    rows = conn.execute("SELECT outcome, clear_seconds, player_name, is_rodin FROM runs").fetchall()
     conn.close()
     return rows
 
@@ -413,16 +413,26 @@ async def combined_stats(ctx: commands.Context):
         await ctx.send("No runs logged yet.")
         return
 
-    total_runs = len(runs)
-    wins = sum(1 for r in runs if r[0] == "win")
-    losses = sum(1 for r in runs if r[0] == "loss")
-    win_rate = 100 * wins / total_runs if total_runs else 0
+    normal_runs = [r for r in runs if not r[3]]
+    rodin_runs = [r for r in runs if r[3]]
 
-    clear_times = [r[1] for r in runs if r[1] is not None]
+    total_runs = len(normal_runs)
+    clear_times = [r[1] for r in normal_runs if r[1] is not None]
     avg_seconds = sum(clear_times) / len(clear_times) if clear_times else 0
     avg_m, avg_s = divmod(int(avg_seconds), 60)
 
-    distinct_users = {r[2] for r in runs if r[2]}
+    rodin_attempts = len(rodin_runs)
+    wins = sum(1 for r in rodin_runs if r[0] == "win")
+    losses = sum(1 for r in rodin_runs if r[0] == "loss")
+    win_rate = 100 * wins / rodin_attempts if rodin_attempts else 0
+
+    distinct_users = set()
+    for r in runs:
+        if r[2]:
+            for name in r[2].split(","):
+                name = name.strip()
+                if name:
+                    distinct_users.add(name)
     user_count = len(distinct_users)
 
     total_item_rolls = len(drops)
@@ -497,9 +507,10 @@ async def combined_stats(ctx: commands.Context):
     lines.append(f"`{len(spell_drops):,}` rolls (`{spell_pct:.2f}%`)")
     lines.append("")
 
-    lines.append("**Rodin Record**")
-    lines.append(f"Wins: `{wins}` • Failed: `{losses}` • Attempts: `{total_runs}`")
-    lines.append(f"Win Rate: `{win_rate:.2f}%`")
+    if rodin_attempts:
+        lines.append("**Rodin Record**")
+        lines.append(f"Wins: `{wins}` • Failed: `{losses}` • Attempts: `{rodin_attempts}`")
+        lines.append(f"Win Rate: `{win_rate:.2f}%`")
 
     embed = discord.Embed(
         title=f"Dungeon Quest Farm Statistics — COMBINED RESULTS{title_suffix}",
