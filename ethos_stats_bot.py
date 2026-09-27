@@ -80,9 +80,15 @@ def init_db():
             outcome TEXT,               -- 'win' or 'loss'
             clear_seconds INTEGER,
             player_name TEXT,
+            is_rodin INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration for databases created before is_rodin existed.
+    try:
+        conn.execute("ALTER TABLE runs ADD COLUMN is_rodin INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.execute("""
         CREATE TABLE IF NOT EXISTS drops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,11 +104,11 @@ def init_db():
     conn.commit()
     conn.close()
 
-def log_run(outcome: str, clear_seconds, player_name, items) -> int:
+def log_run(outcome: str, clear_seconds, player_names, items, is_rodin: int = 0) -> int:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute(
-        "INSERT INTO runs (outcome, clear_seconds, player_name) VALUES (?, ?, ?)",
-        (outcome, clear_seconds, player_name),
+        "INSERT INTO runs (outcome, clear_seconds, player_name, is_rodin) VALUES (?, ?, ?, ?)",
+        (outcome, clear_seconds, player_names, is_rodin),
     )
     run_id = cur.lastrowid
     for item in items:
@@ -115,6 +121,41 @@ def log_run(outcome: str, clear_seconds, player_name, items) -> int:
     conn.commit()
     conn.close()
     return run_id
+
+# How long after a Rodin result message to still consider a later one part of
+# the same shared party attempt, rather than a new run.
+RODIN_MERGE_WINDOW_SECONDS = 60
+
+def find_recent_rodin_run(outcome: str, clear_seconds):
+    """Find a Rodin run logged very recently with the same outcome and Fight
+    Time, meaning it's almost certainly the same shared battle. Returns
+    (run_id, existing_player_names) or None."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        f"""SELECT id, player_name FROM runs
+            WHERE is_rodin = 1 AND outcome = ? AND clear_seconds = ?
+              AND created_at >= datetime('now', '-{RODIN_MERGE_WINDOW_SECONDS} seconds')
+            ORDER BY id DESC LIMIT 1""",
+        (outcome, clear_seconds),
+    ).fetchone()
+    conn.close()
+    return row
+
+def merge_into_run(run_id: int, existing_player_names, new_player_names, items):
+    conn = sqlite3.connect(DB_PATH)
+    existing = existing_player_names.split(",") if existing_player_names else []
+    new = new_player_names.split(",") if new_player_names else []
+    merged = list(dict.fromkeys([*existing, *new]))
+    conn.execute("UPDATE runs SET player_name = ? WHERE id = ?", (",".join(merged), run_id))
+    for item in items:
+        conn.execute(
+            """INSERT INTO drops (run_id, item_name, item_type, rarity, power, potential_power)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (run_id, item["name"], item["type"], item["rarity"],
+             item["power"], item["potential_power"]),
+        )
+    conn.commit()
+    conn.close()
 
 def fetch_runs():
     conn = sqlite3.connect(DB_PATH)
@@ -194,11 +235,18 @@ def parse_ethos_message(message: discord.Message):
         return None
 
     # "VICTORY" and "RODIN DEFEATED" both mean the player won (Rodin was
-    # defeated BY the player) — only "ATTEMPT FAILED" is a loss.
-    if re.search(r"\bVICTORY\b", raw, re.IGNORECASE) or re.search(r"RODIN DEFEATED", raw, re.IGNORECASE):
+    # defeated BY the player) — only "ATTEMPT FAILED" is a loss. Only the
+    # RODIN-titled messages represent a shared party battle that can be
+    # split across several messages; plain VICTORY runs are solo and never merged.
+    if re.search(r"\bVICTORY\b", raw, re.IGNORECASE):
         outcome = "win"
+        is_rodin = False
+    elif re.search(r"RODIN DEFEATED", raw, re.IGNORECASE):
+        outcome = "win"
+        is_rodin = True
     elif re.search(r"ATTEMPT FAILED", raw, re.IGNORECASE):
         outcome = "loss"
+        is_rodin = True
     else:
         return None  # not a run-result message
 
@@ -245,7 +293,13 @@ def parse_ethos_message(message: discord.Message):
                     "potential_power": parse_number(potential_str) if potential_str else None,
                 })
 
-    return {"outcome": outcome, "clear_seconds": clear_seconds, "player_name": player_name, "items": items}
+    return {
+        "outcome": outcome,
+        "clear_seconds": clear_seconds,
+        "player_name": player_name,
+        "items": items,
+        "is_rodin": is_rodin,
+    }
 
 # ---------------------------------------------------------------------------
 # Events
@@ -262,7 +316,17 @@ async def on_message(message: discord.Message):
     if message.author.id == ETHOS_SUITE_BOT_ID:
         parsed = parse_ethos_message(message)
         if parsed:
-            log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"], parsed["items"])
+            if parsed["is_rodin"]:
+                existing = find_recent_rodin_run(parsed["outcome"], parsed["clear_seconds"])
+                if existing:
+                    existing_run_id, existing_player_name = existing
+                    merge_into_run(existing_run_id, existing_player_name, parsed["player_name"], parsed["items"])
+                else:
+                    log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
+                            parsed["items"], is_rodin=1)
+            else:
+                log_run(parsed["outcome"], parsed["clear_seconds"], parsed["player_name"],
+                        parsed["items"], is_rodin=0)
 
     await bot.process_commands(message)
 
